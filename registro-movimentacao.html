@@ -40,9 +40,7 @@
   header.top .status{font-family:var(--font-mono);font-size:12.5px;color:var(--cold);display:flex;align-items:center;gap:6px;}
   header.top .status .dot{width:7px;height:7px;border-radius:50%;background:var(--ink-faint);}
   header.top .status.ok .dot{background:var(--cold);}
-  header.top .status.local .dot{background:var(--warn);}
-  #localBanner{background:var(--accent-tint);color:var(--ink);padding:10px 20px;font-size:13px;border-bottom:1px solid var(--line);display:none;}
-  #localBanner button{margin-left:8px;border:1px solid var(--ink);background:none;color:var(--ink);border-radius:4px;padding:3px 9px;font-size:12px;cursor:pointer;font-weight:600;}
+  header.top .status.warn .dot{background:var(--warn);}
   main{max-width:1180px;margin:0 auto;padding:20px 20px 60px;display:grid;grid-template-columns:400px 1fr;gap:18px;align-items:start;}
   @media (max-width:880px){main{grid-template-columns:1fr;padding:14px 14px 48px;}}
   .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);}
@@ -136,7 +134,7 @@
 <body>
 <header class="top">
   <div class="brand"><span class="mark">DOCE MEL</span><span class="sub">Registro digital de movimentação interna</span></div>
-  <div class="status" id="connStatus"><span class="dot"></span><span id="connLabel">conectando…</span><button type="button" id="retryConn" style="display:none;margin-left:8px;background:none;border:1px solid var(--ink-faint);color:var(--surface);border-radius:4px;font-family:var(--font-body);font-size:11px;padding:3px 8px;cursor:pointer;">tentar de novo</button></div>
+  <div class="status" id="connStatus"><span class="dot"></span><span id="connLabel">iniciando…</span></div>
 </header>
 
 <main>
@@ -235,6 +233,12 @@
   <div class="row2"><button type="button" class="btn btn-ghost" id="emCancel">Cancelar</button><button type="button" class="btn btn-accent" id="emSave">Salvar</button></div>
 </div></div>
 
+<div class="modal-bg" id="confirmModal"><div class="modal" style="max-width:380px;">
+  <h3 id="cmTitle">Confirmar</h3>
+  <p id="cmMsg" style="white-space:pre-line;font-size:13.5px;color:var(--ink-soft);margin:0 0 16px;"></p>
+  <div class="row2"><button type="button" class="btn btn-ghost" id="cmCancel">Cancelar</button><button type="button" class="btn btn-accent" id="cmOk">Confirmar</button></div>
+</div></div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -248,12 +252,28 @@ function showToast(m){ const t=document.getElementById('toast'); t.textContent=m
 function setConn(kind,l){
   const el=document.getElementById('connStatus');
   el.classList.toggle('ok', kind==='ok');
-  el.classList.toggle('local', kind==='local');
+  el.classList.toggle('warn', kind==='warn');
   document.getElementById('connLabel').textContent=l;
 }
 function escapeHtml(s){ if(s===undefined||s===null) return ''; return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function fmtNum(n){ if(n===undefined||n===null||n==='') return '0'; const num=Number(n); return Number.isNaN(num)?'0':num.toLocaleString('pt-BR',{maximumFractionDigits:2}); }
 function keyOf(p){ return [p.marca,p.lote,p.sabor,p.tipo].join('|'); }
+
+// confirm() nativo não funciona dentro do artefato publicado (iframe bloqueia modais do navegador).
+// Esta função mostra um modal próprio e devolve uma Promise<boolean>, usada no lugar de confirm().
+function askConfirm(msg, title){
+  return new Promise(resolve=>{
+    document.getElementById('cmTitle').textContent = title || 'Confirmar';
+    document.getElementById('cmMsg').textContent = msg;
+    const modal=document.getElementById('confirmModal');
+    modal.classList.add('show');
+    const ok=document.getElementById('cmOk'), cancel=document.getElementById('cmCancel');
+    function cleanup(result){ modal.classList.remove('show'); ok.removeEventListener('click',onOk); cancel.removeEventListener('click',onCancel); resolve(result); }
+    function onOk(){ cleanup(true); }
+    function onCancel(){ cleanup(false); }
+    ok.addEventListener('click',onOk); cancel.addEventListener('click',onCancel);
+  });
+}
 function productSummaryText(key){
   const docsForKey=currentDocs.filter(d=>[d.marca,d.lote,d.sabor,d.tipoProduto].join('|')===key);
   if(!docsForKey.length) return null;
@@ -304,8 +324,9 @@ document.getElementById('trayContainer').addEventListener('click', async e=>{
   const p=tray.find(x=>keyOf(x)===key); if(!p) return;
   if(btn.dataset.act==='remove'){
     const summary=productSummaryText(key);
-    const msg=`Finalizar "${p.marca} — ${p.sabor} ${p.tipo}"?`+(summary?`\nHoje: ${summary}`:'\nNenhum palete lançado ainda hoje.');
-    if(!confirm(msg)) return;
+    const msg=(summary?`Hoje: ${summary}`:'Nenhum palete lançado ainda hoje.');
+    const ok=await askConfirm(msg, `Finalizar "${p.marca} — ${p.sabor} ${p.tipo}"?`);
+    if(!ok) return;
     tray=tray.filter(x=>keyOf(x)!==key);
     recentes=recentes.filter(r=>keyOf(r)!==key); recentes.unshift(p); recentes=recentes.slice(0,6);
     renderTray(); renderRecentChips();
@@ -313,7 +334,7 @@ document.getElementById('trayContainer').addEventListener('click', async e=>{
     return;
   }
   if(btn.dataset.act==='register'){
-    if(!db){ showToast('Sem conexão com o armazenamento — toque em "tentar de novo" no topo da página.'); return; }
+    if(!db){ showToast('Armazenamento indisponível neste navegador.'); return; }
     const qtd=Number(card.querySelector('.tc-qtd').value)||0;
     if(!qtd){ showToast('Informe a quantidade de caixas.'); return; }
     const c=caixas[Number(card.querySelector('.tc-caixa').value)]||caixas[0];
@@ -439,7 +460,7 @@ document.getElementById('pmBody').addEventListener('click', async e=>{
   const btn=e.target.closest('button[data-act]'); if(!btn) return;
   const id=btn.closest('tr').dataset.id; const d=currentDocs.find(x=>x.id===id); if(!d) return;
   if(btn.dataset.act==='del'){
-    if(!confirm('Excluir este lançamento?')) return;
+    if(!(await askConfirm('Essa ação não pode ser desfeita.', 'Excluir este lançamento?'))) return;
     try{ await db.collection('lancamentos').doc(id).delete(); showToast('Excluído.'); }catch(err){ showToast('Sem permissão para excluir.'); }
   } else {
     document.getElementById('produtoModal').classList.remove('show');
@@ -481,29 +502,49 @@ function subscribeForDate(dateStr){
   }, err=>{ console.error(err); document.getElementById('ledgerBody').innerHTML='<tr><td colspan="6" class="empty-row">Não foi possível carregar agora.</td></tr>'; });
 }
 
-function withTimeout(promise, ms){
-  return Promise.race([
-    promise,
-    new Promise((_,rej)=>setTimeout(()=>rej(new Error('tempo esgotado ao conectar')), ms))
-  ]);
-}
+/* =============================================================================
+   CAMADA DE ARMAZENAMENTO
+   -----------------------------------------------------------------------------
+   Todo o resto do app fala só com o objeto `db`, usando esta interface:
 
-// Banco local (localStorage) — usado só quando o armazenamento compartilhado não está disponível
-// Estrutura de dados: coleções são arrays, documentos são objetos. Coleções: 'lancamentos', 'config/caixas'
-// Estrtuturar um banco de dados em nuvem é mais complexo, então aqui é só um mock simples que funciona localmente, irei mudar no futuro.
-function makeLocalDb(){
-  const listeners={};
-  const readArr=n=>{ try{ return JSON.parse(localStorage.getItem('rm_'+n)||'[]'); }catch(e){ return []; } };
-  const writeArr=(n,arr)=>{ localStorage.setItem('rm_'+n, JSON.stringify(arr)); (listeners[n]||[]).forEach(fn=>fn()); };
-  const readDoc=p=>{ try{ return JSON.parse(localStorage.getItem('rmd_'+p)||'null'); }catch(e){ return null; } };
+     db.collection(nome).add(dados)                     -> Promise<{id}>
+     db.collection(nome).doc(id).get()                   -> Promise<{exists, data()}>
+     db.collection(nome).doc(id).update(dados)            -> Promise<void>
+     db.collection(nome).doc(id).delete()                 -> Promise<void>
+     db.collection(nome).where(campo,'==',valor)
+          .orderBy(campo,'asc'|'desc')
+          .onSnapshot(callback)                           -> retorna função unsubscribe()
+          // callback recebe { docs: [ {id, data()}, ... ] }
+     db.doc(caminho).get()                                -> Promise<{exists, data()}>
+     db.doc(caminho).set(dados)                            -> Promise<void>
+
+   Hoje: createLocalStorageAdapter() — tudo fica salvo no localStorage deste
+   navegador (não sincroniza entre dispositivos, tambem não é o foco do sistema).
+
+   PARA TROCAR POR OUTRO BANCO NO FUTURO (minha API própria, Firebase, Supabase...):
+   criar uma função createXxxAdapter() que devolva um objeto com essa MESMA
+   interface, e trocar a linha "db = createLocalStorageAdapter();" lá embaixo,
+   dentro de init().
+   ============================================================================= */
+function createLocalStorageAdapter(prefix){
+  prefix = prefix || 'rm_';
+  const listeners = {};
+  const readArr = n => { try{ return JSON.parse(localStorage.getItem(prefix+n)||'[]'); }catch(e){ return []; } };
+  const writeArr = (n,arr) => { localStorage.setItem(prefix+n, JSON.stringify(arr)); (listeners[n]||[]).forEach(fn=>fn()); };
+  const readDoc = p => { try{ return JSON.parse(localStorage.getItem(prefix+'doc:'+p)||'null'); }catch(e){ return null; } };
   return {
     collection(name){
-      const self={ _filters:[], _order:null,
-        add(data){ const arr=readArr(name); const id='local_'+Date.now()+'_'+Math.random().toString(36).slice(2,7); arr.push({id,...data}); writeArr(name,arr); return Promise.resolve({id}); },
+      const self = { _filters:[], _order:null,
+        add(data){
+          const arr=readArr(name);
+          const id='local_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+          arr.push({id,...data}); writeArr(name,arr);
+          return Promise.resolve({id});
+        },
         doc(id){ return {
+          get(){ const d=readArr(name).find(x=>x.id===id); return Promise.resolve({exists:!!d, data:()=>d}); },
           update(data){ const arr=readArr(name); const i=arr.findIndex(x=>x.id===id); if(i>=0){ arr[i]={...arr[i],...data}; writeArr(name,arr);} return Promise.resolve(); },
-          delete(){ writeArr(name, readArr(name).filter(x=>x.id!==id)); return Promise.resolve(); },
-          get(){ const d=readArr(name).find(x=>x.id===id); return Promise.resolve({exists:!!d, data:()=>d}); }
+          delete(){ writeArr(name, readArr(name).filter(x=>x.id!==id)); return Promise.resolve(); }
         };},
         where(field,op,val){ self._filters.push([field,val]); return self; },
         orderBy(field,dir){ self._order=[field,dir||'asc']; return self; },
@@ -522,33 +563,31 @@ function makeLocalDb(){
     },
     doc(path){ return {
       get(){ const d=readDoc(path); return Promise.resolve({exists:!!d, data:()=>d}); },
-      set(data){ localStorage.setItem('rmd_'+path, JSON.stringify(data)); return Promise.resolve(); }
+      set(data){ localStorage.setItem(prefix+'doc:'+path, JSON.stringify(data)); return Promise.resolve(); }
     };}
   };
 }
 
 async function init(){
-  setConn('off','conectando…');
-  document.getElementById('retryConn').style.display='none';
-  document.getElementById('localBanner').style.display='none';
-  db=null;
+  setConn('ok','iniciando…');
   try{
-    if(!window.claude || typeof window.claude.use !== 'function') throw new Error('armazenamento compartilhado indisponível neste ambiente');
-    db=await withTimeout(window.claude.use('db'), 6000);
-    setConn('ok','conectado · compartilhado');
+    localStorage.setItem('__rm_test__','1'); localStorage.removeItem('__rm_test__');
   }catch(e){
-    db=makeLocalDb();
-    setConn('local','modo local · só este navegador');
-    document.getElementById('retryConn').style.display='inline-block';
-    document.getElementById('localBanner').style.display='block';
+    setConn('warn','armazenamento indisponível neste navegador');
+    document.getElementById('ledgerBody').innerHTML='<tr><td colspan="6" class="empty-row">Este navegador está bloqueando o armazenamento local (ex: aba anônima/privada). Abra numa aba normal.</td></tr>';
+    renderTray();
+    return;
   }
+
+  // >>> Ponto de troca do banco de dados: substituir a linha abaixo para usar outro backend no futuro.
+  db = createLocalStorageAdapter('rm_');
+
+  setConn('ok','salvo neste navegador');
   renderTray();
   try{ const snap=await db.doc('config/caixas').get(); if(snap.exists && Array.isArray(snap.data().itens) && snap.data().itens.length) caixas=snap.data().itens; }catch(e){}
   renderTray();
   subscribeForDate(document.getElementById('filterData').value);
 }
-document.getElementById('retryConn').addEventListener('click', init);
-document.getElementById('retryFromBanner').addEventListener('click', init);
 init();
 </script>
 </body>
